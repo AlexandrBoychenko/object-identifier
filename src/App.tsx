@@ -5,14 +5,10 @@ import { IdentifierObject } from "./components/types";
 
 function App() {
   const [currentImg, setCurrentImg] = useState<string[]>([]);
-  const [loading, setLoading] = useState<Boolean>(false);
   const [objectIdentifier, setObjectIdentifier] =
     useState<IdentifierObject | null>(null);
 
-  console.log("loading, objectIdentifier: ", loading, objectIdentifier);
-
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setLoading(true);
     const uploadedFiles = event.target.files;
     const imagesToShow: string[] = [];
 
@@ -26,17 +22,15 @@ function App() {
   return (
     <div className="App">
       <header className="App-header">Welcome to Object System</header>
-      <div className="App-select">
-        Select Image
-        <input
-          data-test-id="upldFileId"
-          type="file"
-          id="user-image"
-          name="user-image"
-          accept="image/png, image/jpeg"
-          onChange={handleChange}
-        />
-      </div>
+      <h3 className="App-select">Select Image</h3>
+      <input
+        data-test-id="upldFileId"
+        type="file"
+        id="user-image"
+        name="user-image"
+        accept="image/png, image/jpeg"
+        onChange={handleChange}
+      />
       <div>
         {currentImg &&
           currentImg.map((imgLink) => (

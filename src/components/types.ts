@@ -39,3 +39,17 @@ export type ReceivedImages = {
     total_count: number;
   };
 };
+
+export type Detection = {
+  labelIndex?: number;
+  score?: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type DetectedObject =
+  | Uint8Array<ArrayBufferLike>
+  | Float32Array<ArrayBufferLike>
+  | Int32Array<ArrayBufferLike>;

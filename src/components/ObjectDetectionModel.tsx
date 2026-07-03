@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  DetectedObject,
-  ObjectDetection,
-  load as cocoModalLoad,
-} from "@tensorflow-models/coco-ssd";
-import { browser } from "@tensorflow/tfjs";
+  browser,
+  LayersModel,
+  loadLayersModel,
+  Tensor,
+} from "@tensorflow/tfjs";
 import {
   Box,
   Button,
@@ -17,7 +17,16 @@ import {
 import { ThemeProvider } from "@mui/material/styles";
 import { theme } from "./styles/theme";
 import { webStyle } from "./styles/webStyle";
-import { EditObject, IdentifierObject } from "./types";
+import {
+  DetectedObject,
+  Detection,
+  EditObject,
+  IdentifierObject,
+} from "./types";
+
+const CLASS_NAMES = ["tanks", "ships", "car", "person"];
+
+const COLORS = ["#FF3B30", "#34C759", "#007AFF", "#FF9500"];
 
 export function ObjectDetectionModel({
   imageLink = "",
@@ -36,114 +45,127 @@ export function ObjectDetectionModel({
 }) {
   const imageEle = useRef<HTMLImageElement>(null);
   const canvasEle = useRef<HTMLCanvasElement | null>(null);
-  const [objectDetector, setObjectDetectors] = useState<ObjectDetection | null>(
+  const [objectDetector, setObjectDetectors] = useState<LayersModel | null>(
     null,
   );
-  const [detectedObjects, setDetectedObjects] = useState<
-    DetectedObject[] | undefined
-  >([]);
+  const [detectedObjects, setDetectedObjects] = useState<Detection[]>([]);
   const [imageBase64, setImageBase64] = useState("");
   const [inputValue, setInputValue] = useState("");
   const [currentEditIndex, setCurrentEditIndex] = useState<
     number | undefined
   >();
   const [showEditModal, setShowEditModal] = useState(false);
+  const [imgLoading, setImgLoading] = useState(true);
 
   const loadOCRModel = async () => {
-    const model = await cocoModalLoad();
+    const model = await loadLayersModel("/model/model.json");
     setObjectDetectors(model);
+  };
+
+  const parseDetections = (data: DetectedObject): Detection[] => {
+    const detections: Detection[] = [];
+
+    let i = 0;
+    const numDetections = data[i++];
+
+    for (let d = 0; d < numDetections; d++) {
+      const labelIndex = data[i++];
+      const score = data[i++];
+      const x = data[i++];
+      const y = data[i++];
+      const width = data[i++];
+      const height = data[i++];
+
+      if (score < 0.4) continue;
+
+      detections.push({ labelIndex, score, x, y, width, height });
+    }
+
+    return detections;
   };
 
   const startDetecting = async () => {
     if (imageEle.current) {
-      const image = browser.fromPixels(imageEle.current);
-      const predictions = await objectDetector?.detect(image);
+      const tensor = browser
+        .fromPixels(imageEle.current)
+        .resizeNearestNeighbor([224, 224])
+        .toFloat()
+        .div(255)
+        .expandDims();
 
-      setDetectedObjects(predictions);
+      const prediction = objectDetector?.predict(tensor) as Tensor;
+      const data = prediction.dataSync();
+
+      const detections = parseDetections(data);
+
+      console.log("prediction: ", prediction);
+
+      data && setDetectedObjects(detections);
     }
   };
+
+  console.log("detectedObjects: ", detectedObjects);
+
+  useMemo(() => {
+    const originalClosePath = CanvasRenderingContext2D.prototype.closePath;
+
+    // Override the prototype method with custom hook
+    CanvasRenderingContext2D.prototype.closePath = function (...args) {
+      setImgLoading(false);
+
+      // Call the original function to ensure the canvas still draws properly
+      return originalClosePath.apply(this, args);
+    };
+  }, []);
 
   const draw = () => {
-    const context = canvasEle?.current?.getContext("2d");
-    const objects = detectedObjects;
-    if (context && canvasEle.current && imageEle.current) {
-      canvasEle.current.width = imageEle.current.width;
-      canvasEle.current.height = imageEle.current.height;
-      // Clear part of the canvas
-      context.fillStyle = "#000000";
-      context.fillRect(0, 0, imageEle.current.width, imageEle.current.height);
+    const ctx = canvasEle?.current?.getContext("2d");
+    const detections = detectedObjects;
 
-      context.drawImage(
-        imageEle.current,
-        0,
-        0,
-        imageEle.current.width,
-        imageEle.current.height,
-      );
+    const canvas = canvasEle.current;
+    const image = imageEle.current;
 
-      setImageBase64(canvasEle.current.toDataURL());
+    if (ctx && canvas && image) {
+      canvas.width = image.width;
+      canvas.height = image.height;
 
-      if (objects?.length) {
-        for (const targetObject of objects) {
-          // Draw the background rectangle for text
-          context.fillStyle = "rgba(0, 128, 0, 0.5)";
-          context.strokeStyle = "white";
-          context.fillRect(
-            targetObject.bbox[0],
-            targetObject.bbox[1],
-            targetObject.bbox[2],
-            20,
-          );
-          // Write image class on top left of rect
-          context.font = "16px Arial";
-          context.fillStyle = "white";
-          context.fillText(
-            targetObject.class,
-            targetObject.bbox[0] + 4,
-            targetObject.bbox[1] + 16,
-          );
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          // draw rectangle using data from prediction result
-          context.beginPath();
-          context.rect(
-            targetObject.bbox[0],
-            targetObject.bbox[1],
-            targetObject.bbox[2],
-            targetObject.bbox[3],
-          );
-          context.strokeStyle = "green";
-          context.stroke();
-          context.closePath();
-        }
-      }
+      detections.forEach((det) => {
+        const { labelIndex, score, x, y, width, height } = det;
+
+        if (!labelIndex) return;
+        if (!score) return;
+
+        const color = COLORS[labelIndex % COLORS.length];
+        const label = `${CLASS_NAMES[labelIndex]} ${(score * 100).toFixed(1)}%`;
+
+        // Convert normalized → pixels
+        const left = x * canvas.width;
+        const top = y * canvas.height;
+        const w = width * canvas.width;
+        const h = height * canvas.height;
+
+        // Draw box
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(left, top, w, h);
+
+        // Background
+        ctx.fillStyle = color;
+        const textWidth = ctx.measureText(label).width + 10;
+        ctx.fillRect(left, top - 22, textWidth, 22);
+
+        // Text
+        ctx.fillStyle = "white";
+        ctx.font = "14px Arial";
+        ctx.fillText(label, left + 5, top - 6);
+      });
     }
   };
 
-  const convertFromSource = () =>
-    existedObjects?.map((exObject): DetectedObject => {
-      const {
-        width: objectwidth,
-        height: objectHeight,
-        x: xCoord,
-        y: yCoord,
-        name: objectName,
-        object_percentage: objectPercentage,
-      } = exObject;
-      return {
-        bbox: [xCoord, yCoord, objectwidth, objectHeight],
-        class: objectName,
-        score: objectPercentage / 10,
-      };
-    });
-
   useEffect(() => {
-    setTimeout(
-      () =>
-        readFromSource
-          ? setDetectedObjects(convertFromSource())
-          : loadOCRModel(),
-      1600,
-    );
+    setTimeout(() => loadOCRModel(), 1600);
   }, [imageLink]);
 
   useEffect(() => {
@@ -154,34 +176,6 @@ export function ObjectDetectionModel({
     detectedObjects && draw();
   }, [detectedObjects]);
 
-  useEffect(() => {
-    if (imageBase64) {
-      const [imgHeight, imgWidth] = [
-        imageEle.current?.height,
-        imageEle.current?.width,
-      ];
-      const bxBlockObjects = detectedObjects?.map((bxObject) => ({
-        name: bxObject.class,
-        width: bxObject.bbox[2],
-        height: bxObject.bbox[3],
-        x: bxObject.bbox[0],
-        y: bxObject.bbox[1],
-        object_percentage: bxObject.score * 10,
-      }));
-
-      setObjectIdentifier({
-        height: Number(imgHeight),
-        width: Number(imgWidth),
-        object_image: {
-          data: imageBase64,
-        },
-        bx_block_objectidentifier2_objects_attributes: bxBlockObjects?.length
-          ? bxBlockObjects
-          : [],
-      });
-    }
-  }, [imageBase64, detectedObjects]);
-
   return (
     <ThemeProvider theme={theme}>
       <Box
@@ -189,7 +183,7 @@ export function ObjectDetectionModel({
           mt: 2,
           display: "flex",
           flexDirection: "column",
-          alignItems: 'center',
+          alignItems: "center",
           gap: 2,
         }}
       >
@@ -213,7 +207,7 @@ export function ObjectDetectionModel({
             objectFit: "contain",
           }}
         />
-        {!detectedObjects && showEditModal && (
+        {imgLoading && (
           <CircularProgress
             style={{ display: "block", margin: "auto", padding: "10rem" }}
           />
@@ -224,10 +218,10 @@ export function ObjectDetectionModel({
             <Box sx={{ display: "flex", gridGap: "1rem", py: "0.5rem" }}>
               {detectedObjects?.map((imgObject, index) => {
                 return (
-                  <div key={imgObject.score}>
+                  <div key={index}>
                     <Chip
                       data-test-id="chip-btn"
-                      label={imgObject.class}
+                      label={index}
                       variant="outlined"
                       style={webStyle.chip}
                       onClick={() => {
@@ -262,7 +256,7 @@ export function ObjectDetectionModel({
                           name="changeObjects"
                           type="text"
                           style={webStyle.input}
-                          value={inputValue || imgObject.class}
+                          value={inputValue}
                           onChange={(
                             event: React.ChangeEvent<HTMLInputElement>,
                           ) => {
@@ -278,7 +272,7 @@ export function ObjectDetectionModel({
                             const resultDetectedObjects = [...detectedObjects];
                             resultDetectedObjects[index] = {
                               ...detectedObjects[index],
-                              class: inputValue,
+                              //   class: inputValue,
                             };
                             setDetectedObjects(resultDetectedObjects);
                             setShowEditModal(false);
