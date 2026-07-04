@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   browser,
+  GraphModel,
   LayersModel,
+  loadGraphModel,
   loadLayersModel,
   Tensor,
 } from "@tensorflow/tfjs";
@@ -24,7 +26,7 @@ import {
   IdentifierObject,
 } from "./types";
 
-const CLASS_NAMES = ["tanks", "ships", "car", "person"];
+const LABELS = ["tanks", "ships", "car", "person"];
 
 const COLORS = ["#FF3B30", "#34C759", "#007AFF", "#FF9500"];
 
@@ -45,9 +47,8 @@ export function ObjectDetectionModel({
 }) {
   const imageEle = useRef<HTMLImageElement>(null);
   const canvasEle = useRef<HTMLCanvasElement | null>(null);
-  const [objectDetector, setObjectDetectors] = useState<LayersModel | null>(
-    null,
-  );
+  const [objectDetector, setObjectDetectors] =
+    useState<GraphModel<string> | null>(null);
   const [detectedObjects, setDetectedObjects] = useState<Detection[]>([]);
   const [imageBase64, setImageBase64] = useState("");
   const [inputValue, setInputValue] = useState("");
@@ -55,33 +56,102 @@ export function ObjectDetectionModel({
     number | undefined
   >();
   const [showEditModal, setShowEditModal] = useState(false);
-  const [imgLoading, setImgLoading] = useState(true);
+  const [imgLoading, setImgLoading] = useState(false);
 
   const loadOCRModel = async () => {
-    const model = await loadLayersModel("/model/model.json");
+    const model = await loadGraphModel("/model/model.json");
     setObjectDetectors(model);
   };
 
-  const parseDetections = (data: DetectedObject): Detection[] => {
-    const detections: Detection[] = [];
+  const drawDetection = (
+    bbox: number[][], // [[x, y, w, h]]
+    classes: number[][], // [[...probs]]
+  ) => {
+    const canvas = canvasEle.current;
+    const image = imageEle.current;
 
-    let i = 0;
-    const numDetections = data[i++];
+    const ctx = canvas?.getContext("2d");
+    if (!ctx || !canvas || !image) return;
 
-    for (let d = 0; d < numDetections; d++) {
-      const labelIndex = data[i++];
-      const score = data[i++];
-      const x = data[i++];
-      const y = data[i++];
-      const width = data[i++];
-      const height = data[i++];
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
 
-      if (score < 0.4) continue;
+    ctx.drawImage(image, 0, 0);
 
-      detections.push({ labelIndex, score, x, y, width, height });
-    }
+    const scaleX = canvas.width / 224;
+    const scaleY = canvas.height / 224;
 
-    return detections;
+    bbox.forEach((box, i) => {
+      let [x, y, w, h] = box;
+
+      // 🚨 FIX 1: handle negative width/height
+      if (w < 0) {
+        x = x + w;
+        w = Math.abs(w);
+      }
+
+      if (h < 0) {
+        y = y + h;
+        h = Math.abs(h);
+      }
+
+      // 🚨 FIX 2: scale to image
+      let px = x * scaleX;
+      let py = y * scaleY;
+      let pw = w * scaleX;
+      let ph = h * scaleY;
+
+      // 🚨 FIX 3: enforce MIN SIZE
+      const MIN_SIZE = 500;
+      pw = Math.max(pw, MIN_SIZE);
+      ph = Math.max(ph, MIN_SIZE);
+
+      // 🚨 FIX 4: clamp inside canvas
+      px = Math.max(0, Math.min(px, canvas.width - pw));
+      py = Math.max(0, Math.min(py, canvas.height - ph)) + 50;
+
+      // 🎯 class
+      const probs = classes[i];
+      const classId = probs.indexOf(Math.max(...probs));
+      const confidence = Math.max(...probs);
+
+      // ✅ draw box
+      ctx.strokeStyle = "#00FF00";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(px, py, pw, ph);
+
+      // ✅ ALWAYS visible center dot
+      ctx.fillStyle = "red";
+      ctx.beginPath();
+      ctx.arc(px + pw / 2, py + ph / 2, 5, 0, 2 * Math.PI);
+      ctx.fill();
+
+      // ✅ label
+      const text = `${LABELS[classId]} ${(confidence * 100).toFixed(1)}%`;
+
+      ctx.font = "16px Arial";
+      const textWidth = ctx.measureText(text).width;
+
+      ctx.fillStyle = "#00FF00";
+      ctx.fillRect(px, py - 20, textWidth + 10, 20);
+
+      ctx.fillStyle = "#000";
+      ctx.fillText(text, px + 5, py - 5);
+
+      // 🧠 DEBUG LOG
+      console.log("DRAWN BOX:", { px, py, pw, ph });
+    });
+
+    console.log(
+      JSON.stringify({
+        bbox,
+        classes,
+        imageSize: {
+          w: imageEle.current?.naturalWidth,
+          h: imageEle.current?.naturalHeight,
+        },
+      }),
+    );
   };
 
   const startDetecting = async () => {
@@ -93,14 +163,22 @@ export function ObjectDetectionModel({
         .div(255)
         .expandDims();
 
-      const prediction = objectDetector?.predict(tensor) as Tensor;
-      const data = prediction.dataSync();
+      // const detection = await objectDetector?.executeAsync(tensor);
 
-      const detections = parseDetections(data);
+      const [bboxTensor, classTensor] = (await objectDetector?.executeAsync(
+        tensor,
+      )) as any;
 
-      console.log("prediction: ", prediction);
+      // convert to JS arrays
+      const bbox = await bboxTensor.array();
+      const classes = await classTensor.array();
 
-      data && setDetectedObjects(detections);
+      console.log("bbox:", bbox);
+      console.log("classes:", classes);
+
+      // data && setDetectedObjects(detections);
+
+      drawDetection(bbox, classes);
     }
   };
 
@@ -118,63 +196,14 @@ export function ObjectDetectionModel({
     };
   }, []);
 
-  const draw = () => {
-    const ctx = canvasEle?.current?.getContext("2d");
-    const detections = detectedObjects;
-
-    const canvas = canvasEle.current;
-    const image = imageEle.current;
-
-    if (ctx && canvas && image) {
-      canvas.width = image.width;
-      canvas.height = image.height;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      detections.forEach((det) => {
-        const { labelIndex, score, x, y, width, height } = det;
-
-        if (!labelIndex) return;
-        if (!score) return;
-
-        const color = COLORS[labelIndex % COLORS.length];
-        const label = `${CLASS_NAMES[labelIndex]} ${(score * 100).toFixed(1)}%`;
-
-        // Convert normalized → pixels
-        const left = x * canvas.width;
-        const top = y * canvas.height;
-        const w = width * canvas.width;
-        const h = height * canvas.height;
-
-        // Draw box
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        ctx.strokeRect(left, top, w, h);
-
-        // Background
-        ctx.fillStyle = color;
-        const textWidth = ctx.measureText(label).width + 10;
-        ctx.fillRect(left, top - 22, textWidth, 22);
-
-        // Text
-        ctx.fillStyle = "white";
-        ctx.font = "14px Arial";
-        ctx.fillText(label, left + 5, top - 6);
-      });
-    }
-  };
-
   useEffect(() => {
     setTimeout(() => loadOCRModel(), 1600);
   }, [imageLink]);
 
   useEffect(() => {
-    objectDetector && startDetecting();
-  }, [objectDetector]);
-
-  useEffect(() => {
-    detectedObjects && draw();
-  }, [detectedObjects]);
+    objectDetector && imageEle.current && startDetecting();
+    //eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [objectDetector, imageEle.current]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -191,7 +220,7 @@ export function ObjectDetectionModel({
           crossOrigin="anonymous"
           ref={imageEle}
           src={imageLink}
-          alt="image link"
+          alt="object"
           style={{
             maxWidth: "30rem",
             objectFit: "contain",
