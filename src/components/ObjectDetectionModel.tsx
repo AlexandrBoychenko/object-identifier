@@ -26,9 +26,9 @@ import {
   IdentifierObject,
 } from "./types";
 
-const LABELS = ["tanks", "ships", "car", "person"];
+const LABELS = ["корабель", "танк"];
 
-const COLORS = ["#FF3B30", "#34C759", "#007AFF", "#FF9500"];
+const COLORS = ["#FF3B30", "#34C759"];
 
 export function ObjectDetectionModel({
   imageLink = "",
@@ -64,8 +64,14 @@ export function ObjectDetectionModel({
   };
 
   const drawDetection = (
-    bbox: number[][], // [[x, y, w, h]]
-    classes: number[][], // [[...probs]]
+    bbox:
+      | Float32Array<ArrayBufferLike>
+      | Uint8Array<ArrayBufferLike>
+      | Int32Array<ArrayBufferLike>, // [[x, y, w, h]]
+    classes:
+      | Float32Array<ArrayBufferLike>
+      | Uint8Array<ArrayBufferLike>
+      | Int32Array<ArrayBufferLike>, // [[...probs]]
   ) => {
     const canvas = canvasEle.current;
     const image = imageEle.current;
@@ -73,76 +79,42 @@ export function ObjectDetectionModel({
     const ctx = canvas?.getContext("2d");
     if (!ctx || !canvas || !image) return;
 
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
+    const imageWidth = image.width;
+    const imageHeight = image.height;
 
-    ctx.drawImage(image, 0, 0);
+    // clear previous drawings
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    const scaleX = canvas.width / 224;
-    const scaleY = canvas.height / 224;
+    // 🔲 Extract bbox
+    const [x, y, w, h] = bbox;
 
-    bbox.forEach((box, i) => {
-      let [x, y, w, h] = box;
+    // 🎯 Convert normalized → pixels
+    const px = (x - w / 2) * imageWidth;
+    const py = (y - h / 2) * imageHeight;
+    const pw = w * imageWidth;
+    const ph = h * imageHeight;
 
-      // 🚨 FIX 1: handle negative width/height
-      if (w < 0) {
-        x = x + w;
-        w = Math.abs(w);
-      }
+    // 🏷️ Get class
+    const classId = classes.indexOf(Math.max(...classes));
+    const confidence = classes[classId];
+    const label = LABELS[classId];
 
-      if (h < 0) {
-        y = y + h;
-        h = Math.abs(h);
-      }
+    // 🎨 Draw rectangle
+    ctx.strokeStyle = COLORS[classId];
+    ctx.lineWidth = 3;
+    ctx.strokeRect(px, py, pw, ph);
 
-      // 🚨 FIX 2: scale to image
-      let px = x * scaleX;
-      let py = y * scaleY;
-      let pw = w * scaleX;
-      let ph = h * scaleY;
+    // 🏷️ Draw label background
+    ctx.fillStyle = COLORS[classId];
+    ctx.fillRect(px, py - 25, 120, 25);
 
-      // 🚨 FIX 3: enforce MIN SIZE
-      const MIN_SIZE = 500;
-      pw = Math.max(pw, MIN_SIZE);
-      ph = Math.max(ph, MIN_SIZE);
-
-      // 🚨 FIX 4: clamp inside canvas
-      px = Math.max(0, Math.min(px, canvas.width - pw));
-      py = Math.max(0, Math.min(py, canvas.height - ph)) + 50;
-
-      // 🎯 class
-      const probs = classes[i];
-      const classId = probs.indexOf(Math.max(...probs));
-      const confidence = Math.max(...probs);
-
-      // ✅ draw box
-      ctx.strokeStyle = "#00FF00";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(px, py, pw, ph);
-
-      // ✅ ALWAYS visible center dot
-      ctx.fillStyle = "red";
-      ctx.beginPath();
-      ctx.arc(px + pw / 2, py + ph / 2, 5, 0, 2 * Math.PI);
-      ctx.fill();
-
-      // ✅ label
-      const text = `${LABELS[classId]} ${(confidence * 100).toFixed(1)}%`;
-
-      ctx.font = "16px Arial";
-      const textWidth = ctx.measureText(text).width;
-
-      ctx.fillStyle = "#00FF00";
-      ctx.fillRect(px, py - 20, textWidth + 10, 20);
-
-      ctx.fillStyle = "#000";
-      ctx.fillText(text, px + 5, py - 5);
-
-      // 🧠 DEBUG LOG
-      console.log("DRAWN BOX:", { px, py, pw, ph });
-    });
+    // ✍️ Draw text
+    ctx.fillStyle = "white";
+    ctx.font = "16px Arial";
+    ctx.fillText(`${label} (${confidence.toFixed(2)})`, px + 5, py - 5);
 
     console.log(
+      "bbox, classes, imageSize",
       JSON.stringify({
         bbox,
         classes,
@@ -163,18 +135,15 @@ export function ObjectDetectionModel({
         .div(255)
         .expandDims();
 
-      // const detection = await objectDetector?.executeAsync(tensor);
+      const [bboxTensor, classTensor] = objectDetector?.execute(tensor, [
+        "Identity:0",
+        "Identity_1:0",
+      ]) as Tensor[];
 
-      const [bboxTensor, classTensor] = (await objectDetector?.executeAsync(
-        tensor,
-      )) as any;
+      const bbox = await bboxTensor.data();
+      const classes = await classTensor.data();
 
-      // convert to JS arrays
-      const bbox = await bboxTensor.array();
-      const classes = await classTensor.array();
-
-      console.log("bbox:", bbox);
-      console.log("classes:", classes);
+      console.log("bbox, classes:", bbox, classes);
 
       // data && setDetectedObjects(detections);
 
@@ -224,7 +193,7 @@ export function ObjectDetectionModel({
           style={{
             maxWidth: "30rem",
             objectFit: "contain",
-            visibility: "hidden",
+            // visibility: "hidden",
             position: "absolute",
           }}
         />
@@ -234,6 +203,7 @@ export function ObjectDetectionModel({
           style={{
             maxWidth: "30rem",
             objectFit: "contain",
+            zIndex: 1,
           }}
         />
         {imgLoading && (
