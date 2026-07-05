@@ -75,12 +75,14 @@ export function ObjectDetectionModel({
   ) => {
     const canvas = canvasEle.current;
     const image = imageEle.current;
-
     const ctx = canvas?.getContext("2d");
     if (!ctx || !canvas || !image) return;
 
     const imageWidth = image.width;
     const imageHeight = image.height;
+
+    canvas.width = imageWidth;
+    canvas.height = imageHeight;
 
     // clear previous drawings
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -112,18 +114,6 @@ export function ObjectDetectionModel({
     ctx.fillStyle = "white";
     ctx.font = "16px Arial";
     ctx.fillText(`${label} (${confidence.toFixed(2)})`, px + 5, py - 5);
-
-    console.log(
-      "bbox, classes, imageSize",
-      JSON.stringify({
-        bbox,
-        classes,
-        imageSize: {
-          w: imageEle.current?.naturalWidth,
-          h: imageEle.current?.naturalHeight,
-        },
-      }),
-    );
   };
 
   const startDetecting = async () => {
